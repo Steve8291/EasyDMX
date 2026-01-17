@@ -104,19 +104,39 @@ void EasyDMX::end() {
 
     // Stop the tasks based on the operating mode
     if (mode == DMXMode::Transmit || mode == DMXMode::Both || mode == DMXMode::BothKeepRx) {
-        vTaskDelete(dmx_tx_task_handle);
-        free(dmx_data_tx);
-        dmx_data_tx = nullptr;
+        if (dmx_tx_task_handle != nullptr) {
+            vTaskDelete(dmx_tx_task_handle);
+            dmx_tx_task_handle = nullptr;
+        }
+        if (dmx_data_tx != nullptr) {
+            free(dmx_data_tx);
+            dmx_data_tx = nullptr;
+        }
+        if (dmx_tx_mutex != nullptr) {
+            vSemaphoreDelete(dmx_tx_mutex);
+            dmx_tx_mutex = nullptr;
+        }
     }
     if (mode == DMXMode::Receive || mode == DMXMode::Both || mode == DMXMode::BothKeepRx) {
-        vTaskDelete(dmx_rx_task_handle);
-        free(dmx_data_rx);
-        dmx_data_rx = nullptr;
+        if (dmx_rx_task_handle != nullptr) {
+            vTaskDelete(dmx_rx_task_handle);
+            dmx_rx_task_handle = nullptr;
+        }
+        if (dmx_data_rx != nullptr) {
+            free(dmx_data_rx);
+            dmx_data_rx = nullptr;
+        }
+        if (dmx_rx_mutex != nullptr) {
+            vSemaphoreDelete(dmx_rx_mutex);
+            dmx_rx_mutex = nullptr;
+        }
     }
     
     uart_driver_delete(dmx_uart_num);
-    free(rx_buffer);
-    rx_buffer = nullptr;
+    if (rx_buffer != nullptr) {
+        free(rx_buffer);
+        rx_buffer = nullptr;
+    }
     initialized = false;
 }
 
@@ -124,12 +144,23 @@ void EasyDMX::end() {
  * Sets a DMX channel to a specific value.
  */
 void EasyDMX::setChannel(int channel, uint8_t value) {
+    // Only valid when TX is active.
+    if (mode == DMXMode::Receive) {
+        return;
+    }
     // Don't allow setting the channel if the mode is set to BothKeepRx
     if (mode == DMXMode::BothKeepRx) {
         return;
     }
     // Do not allow setting the start code
     if (channel < 1 || channel > 512) {
+        return;
+    }
+    // Respect configured TX channel count (setTxChannels).
+    if (channel > dmx_tx_channels) {
+        return;
+    }
+    if (dmx_tx_mutex == nullptr || dmx_data_tx == nullptr) {
         return;
     }
 
@@ -143,8 +174,15 @@ void EasyDMX::setChannel(int channel, uint8_t value) {
  * Gets the value of a DMX channel.
  */
 uint8_t EasyDMX::getChannel(int channel) {
+    // Only valid when RX is active.
+    if (mode == DMXMode::Transmit) {
+        return 0;
+    }
     // Prevent access faults
     if (channel < 1 || channel > 512) {
+        return 0;
+    }
+    if (dmx_rx_mutex == nullptr || dmx_data_rx == nullptr) {
         return 0;
     }
 
@@ -160,8 +198,19 @@ uint8_t EasyDMX::getChannel(int channel) {
  * Gets the value of a DMX channel in the transmit buffer.
  */
 uint8_t EasyDMX::getChannelTx(int channel) {
+    // Only valid when TX is active.
+    if (mode == DMXMode::Receive) {
+        return 0;
+    }
     // Prevent access faults
     if (channel < 1 || channel > 512) {
+        return 0;
+    }
+    // Respect configured TX channel count (setTxChannels).
+    if (channel > dmx_tx_channels) {
+        return 0;
+    }
+    if (dmx_tx_mutex == nullptr || dmx_data_tx == nullptr) {
         return 0;
     }
 
@@ -231,7 +280,10 @@ void EasyDMX::dmxRxTask() {
                         for (int i = 0; i < event.size; i++) {
                             if (current_rx_addr < 513) {
                                 if (mode == DMXMode::BothKeepRx) {
-                                    dmx_data_tx[current_rx_addr] = rx_buffer[i];
+                                    // Avoid overrunning the TX buffer when setTxChannels() < 512.
+                                    if (dmx_data_tx != nullptr && current_rx_addr <= dmx_tx_channels) {
+                                        dmx_data_tx[current_rx_addr] = rx_buffer[i];
+                                    }
                                 }
                                 dmx_data_rx[current_rx_addr++] = rx_buffer[i];
                             }

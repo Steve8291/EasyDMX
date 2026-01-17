@@ -175,19 +175,19 @@ public:
 private:
     void dmxTxTask();
     void dmxRxTask();
-    TaskHandle_t dmx_tx_task_handle;
-    TaskHandle_t dmx_rx_task_handle;
-    int rx_pin;
-    int tx_pin;
-    uart_port_t dmx_uart_num;
-    uint8_t *dmx_data_tx;
+    TaskHandle_t dmx_tx_task_handle = nullptr;
+    TaskHandle_t dmx_rx_task_handle = nullptr;
+    int rx_pin = DMXPin::NoRx;
+    int tx_pin = DMXPin::NoTx;
+    uart_port_t dmx_uart_num = UART_NUM_MAX;
+    uint8_t *dmx_data_tx = nullptr;
     uint16_t dmx_tx_channels = 512;
-    uint8_t *dmx_data_rx;
-    uint8_t *rx_buffer;
-    SemaphoreHandle_t dmx_rx_mutex;
-    SemaphoreHandle_t dmx_tx_mutex;
-    DMXMode mode;
-    QueueHandle_t uart_queue;
+    uint8_t *dmx_data_rx = nullptr;
+    uint8_t *rx_buffer = nullptr;
+    SemaphoreHandle_t dmx_rx_mutex = nullptr;
+    SemaphoreHandle_t dmx_tx_mutex = nullptr;
+    DMXMode mode = DMXMode::Receive;
+    QueueHandle_t uart_queue = nullptr;
     bool initialized = false;
 };
 
