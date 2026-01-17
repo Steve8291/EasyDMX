@@ -67,8 +67,8 @@ int EasyDMX::begin(DMXMode mode, int rx_pin, int tx_pin) {
 
     // Based on the operating mode, create the appropriate task
     if (mode == DMXMode::Transmit || mode == DMXMode::Both || mode == DMXMode::BothKeepRx) {
-        dmx_data_tx = (uint8_t*)malloc(513);
-        memset(dmx_data_tx, 0, 513);
+        dmx_data_tx = (uint8_t*)malloc(dmx_tx_channels + 1);
+        memset(dmx_data_tx, 0, dmx_tx_channels + 1);
         dmx_tx_mutex = xSemaphoreCreateMutex();
 
         xTaskCreate([](void* pvParameters) {
@@ -174,6 +174,19 @@ uint8_t EasyDMX::getChannelTx(int channel) {
 }
 
 /**
+ * Sets the number of channels for the DMX transmit buffer.
+ */
+void EasyDMX::setTxChannels(uint16_t channels) {
+    if (initialized) {
+        return;
+    }
+    if (channels < 1 || channels > 512) {
+        return;
+    }
+    dmx_tx_channels = channels;
+}
+
+/**
  * The task that sends the DMX data.
  */
 void EasyDMX::dmxTxTask() {
@@ -186,7 +199,7 @@ void EasyDMX::dmxTxTask() {
             uart_set_line_inverse(dmx_uart_num, 0);                             // Revert the TX line back to normal (HIGH)
             ets_delay_us(14);                                                   // Wait for the Mark After Break (MAB) to finish
             uart_write_bytes(dmx_uart_num, (const char*)&start_code, 1);        // Send the start code
-            uart_write_bytes(dmx_uart_num, (const char*)dmx_data_tx + 1, 512);  // Send the DMX data
+            uart_write_bytes(dmx_uart_num, (const char*)dmx_data_tx + 1, dmx_tx_channels);  // Send the DMX data
             xSemaphoreGive(dmx_tx_mutex);                                        // Release the mutex
         }
     }

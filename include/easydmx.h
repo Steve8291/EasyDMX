@@ -159,6 +159,13 @@ public:
     uint8_t getChannelTx(int channel);
 
     /**
+     * Sets the number of channels for the DMX transmit buffer.
+     * This must be called before begin().
+     * @param channels The number of channels to use. Must be between 1 and 512.
+     */
+    void setTxChannels(uint16_t channels);
+
+    /**
      * Destructor for the EasyDMX class.
      */
     ~EasyDMX() {
@@ -174,6 +181,7 @@ private:
     int tx_pin;
     uart_port_t dmx_uart_num;
     uint8_t *dmx_data_tx;
+    uint16_t dmx_tx_channels = 512;
     uint8_t *dmx_data_rx;
     uint8_t *rx_buffer;
     SemaphoreHandle_t dmx_rx_mutex;
