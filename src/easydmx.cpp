@@ -18,6 +18,8 @@
 
 #include <easydmx.h>
 
+#include <algorithm>
+
  /**
   * List of UART numbers in descending order. This way the UART used typically for serial communication is used last.
   * If 3 (for some chips only 2) EasyDMX instances are required, the Arduino Serial library shouldn't be used anymore.
@@ -33,7 +35,24 @@ const uart_port_t UART_MAP[] = {
 #endif
 };
 
-int next_uart = 0;
+static bool uart_in_use[sizeof(UART_MAP) / sizeof(UART_MAP[0])] = {false};
+
+static int allocate_uart_index() {
+    for (int i = 0; i < (int)(sizeof(UART_MAP) / sizeof(UART_MAP[0])); i++) {
+        if (!uart_in_use[i]) {
+            uart_in_use[i] = true;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void release_uart_index(int index) {
+    if (index < 0 || index >= (int)(sizeof(UART_MAP) / sizeof(UART_MAP[0]))) {
+        return;
+    }
+    uart_in_use[index] = false;
+}
 
 /**
  * Starts the DMX driver with the given pins.
@@ -42,13 +61,55 @@ int EasyDMX::begin(DMXMode mode, int rx_pin, int tx_pin) {
     if (initialized) {
         return -1;
     }
-    initialized = true;
 
-    if (next_uart >= sizeof(UART_MAP) / sizeof(UART_MAP[0])) {
+    bool uart_installed = false;
+    auto cleanup = [&]() {
+        if (dmx_tx_task_handle != nullptr) {
+            vTaskDelete(dmx_tx_task_handle);
+            dmx_tx_task_handle = nullptr;
+        }
+        if (dmx_rx_task_handle != nullptr) {
+            vTaskDelete(dmx_rx_task_handle);
+            dmx_rx_task_handle = nullptr;
+        }
+        if (dmx_data_tx != nullptr) {
+            free(dmx_data_tx);
+            dmx_data_tx = nullptr;
+        }
+        if (dmx_data_rx != nullptr) {
+            free(dmx_data_rx);
+            dmx_data_rx = nullptr;
+        }
+        if (rx_buffer != nullptr) {
+            free(rx_buffer);
+            rx_buffer = nullptr;
+        }
+        if (dmx_tx_mutex != nullptr) {
+            vSemaphoreDelete(dmx_tx_mutex);
+            dmx_tx_mutex = nullptr;
+        }
+        if (dmx_rx_mutex != nullptr) {
+            vSemaphoreDelete(dmx_rx_mutex);
+            dmx_rx_mutex = nullptr;
+        }
+        if (uart_installed) {
+            uart_driver_delete(dmx_uart_num);
+            uart_installed = false;
+        }
+        if (uart_map_index >= 0) {
+            release_uart_index(uart_map_index);
+            uart_map_index = -1;
+        }
+        dmx_uart_num = UART_NUM_MAX;
+        initialized = false;
+    };
+
+    uart_map_index = allocate_uart_index();
+    if (uart_map_index < 0) {
+        cleanup();
         return -1;
     }
-
-    dmx_uart_num = UART_MAP[next_uart++];
+    dmx_uart_num = UART_MAP[uart_map_index];
 
     this->rx_pin = rx_pin;
     this->tx_pin = tx_pin;
@@ -61,36 +122,77 @@ int EasyDMX::begin(DMXMode mode, int rx_pin, int tx_pin) {
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_2,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE };
-    uart_param_config(dmx_uart_num, &uart_config);
-    uart_set_pin(dmx_uart_num, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_driver_install(dmx_uart_num, UART_BUF_SIZE * 2, UART_BUF_SIZE * 2, 20, &uart_queue, 0);
+    if (uart_param_config(dmx_uart_num, &uart_config) != ESP_OK) {
+        cleanup();
+        return -1;
+    }
+
+    // Map NoRx/NoTx to UART_PIN_NO_CHANGE instead of GPIO0.
+    const int effective_tx_pin = (tx_pin == DMXPin::NoTx) ? UART_PIN_NO_CHANGE : tx_pin;
+    const int effective_rx_pin = (rx_pin == DMXPin::NoRx) ? UART_PIN_NO_CHANGE : rx_pin;
+    if (uart_set_pin(dmx_uart_num, effective_tx_pin, effective_rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK) {
+        cleanup();
+        return -1;
+    }
+    if (uart_driver_install(dmx_uart_num, UART_BUF_SIZE * 2, UART_BUF_SIZE * 2, 20, &uart_queue, 0) != ESP_OK) {
+        cleanup();
+        return -1;
+    }
+    uart_installed = true;
 
     // Based on the operating mode, create the appropriate task
     if (mode == DMXMode::Transmit || mode == DMXMode::Both || mode == DMXMode::BothKeepRx) {
         dmx_data_tx = (uint8_t*)malloc(dmx_tx_channels + 1);
+        if (dmx_data_tx == nullptr) {
+            cleanup();
+            return -1;
+        }
         memset(dmx_data_tx, 0, dmx_tx_channels + 1);
         dmx_tx_mutex = xSemaphoreCreateMutex();
+        if (dmx_tx_mutex == nullptr) {
+            cleanup();
+            return -1;
+        }
 
-        xTaskCreate([](void* pvParameters) {
+        if (xTaskCreate([](void* pvParameters) {
             EasyDMX* dmx = static_cast<EasyDMX*>(pvParameters);
             dmx->dmxTxTask();
             },
-            "dmxTxTask", 1024, this, 1, &dmx_tx_task_handle);
+            "dmxTxTask", 1024, this, 1, &dmx_tx_task_handle) != pdPASS) {
+            cleanup();
+            return -1;
+        }
     }
 
     if (mode == DMXMode::Receive || mode == DMXMode::Both || mode == DMXMode::BothKeepRx) {
         dmx_data_rx = (uint8_t*)malloc(513);
+        if (dmx_data_rx == nullptr) {
+            cleanup();
+            return -1;
+        }
         memset(dmx_data_rx, 0, 513);
         rx_buffer = (uint8_t*)malloc(UART_BUF_SIZE);
+        if (rx_buffer == nullptr) {
+            cleanup();
+            return -1;
+        }
         dmx_rx_mutex = xSemaphoreCreateMutex();
+        if (dmx_rx_mutex == nullptr) {
+            cleanup();
+            return -1;
+        }
 
-        xTaskCreate([](void* pvParameters) {
+        if (xTaskCreate([](void* pvParameters) {
             EasyDMX* dmx = static_cast<EasyDMX*>(pvParameters);
             dmx->dmxRxTask();
             },
-            "dmxRxTask", 2048, this, 1, &dmx_rx_task_handle);
+            "dmxRxTask", 2048, this, 1, &dmx_rx_task_handle) != pdPASS) {
+            cleanup();
+            return -1;
+        }
     }
 
+    initialized = true;
     return 0;
 }
 
@@ -133,6 +235,10 @@ void EasyDMX::end() {
     }
     
     uart_driver_delete(dmx_uart_num);
+    if (uart_map_index >= 0) {
+        release_uart_index(uart_map_index);
+        uart_map_index = -1;
+    }
     if (rx_buffer != nullptr) {
         free(rx_buffer);
         rx_buffer = nullptr;
@@ -281,8 +387,11 @@ void EasyDMX::dmxRxTask() {
                             if (current_rx_addr < 513) {
                                 if (mode == DMXMode::BothKeepRx) {
                                     // Avoid overrunning the TX buffer when setTxChannels() < 512.
-                                    if (dmx_data_tx != nullptr && current_rx_addr <= dmx_tx_channels) {
-                                        dmx_data_tx[current_rx_addr] = rx_buffer[i];
+                                    if (dmx_data_tx != nullptr && dmx_tx_mutex != nullptr && current_rx_addr <= dmx_tx_channels) {
+                                        if (xSemaphoreTake(dmx_tx_mutex, portMAX_DELAY)) {
+                                            dmx_data_tx[current_rx_addr] = rx_buffer[i];
+                                            xSemaphoreGive(dmx_tx_mutex);
+                                        }
                                     }
                                 }
                                 dmx_data_rx[current_rx_addr++] = rx_buffer[i];

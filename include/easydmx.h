@@ -105,6 +105,12 @@ enum DMXChannelType {
  */
 class EasyDMX {
 public:
+    EasyDMX() = default;
+    EasyDMX(const EasyDMX&) = delete;
+    EasyDMX& operator=(const EasyDMX&) = delete;
+    EasyDMX(EasyDMX&&) = delete;
+    EasyDMX& operator=(EasyDMX&&) = delete;
+
     /**
      * Initializes the DMX driver with the given pins.
      * Two max485 modules are required if you want to both transmit and receive DMX data.
@@ -144,7 +150,7 @@ public:
 
     /**
      * Gets the value of a DMX channel.
-     * If the mode is set to BothKeepRx, this function does nothing.
+        * Only valid when RX is active (Receive, Both, BothKeepRx). In Transmit mode this returns 0.
      * @param channel The channel to get. Must be between 1 and 512.
      * @return The value of the channel as a uint8_t.
      */
@@ -152,7 +158,8 @@ public:
 
     /**
      * Gets the value of a DMX channel in the transmit buffer.
-     * If the mode is set to BothKeepRx, this function will return the same value as getChannel.
+        * Only valid when TX is active (Transmit, Both, BothKeepRx). In Receive mode this returns 0.
+        * In BothKeepRx, the TX buffer is populated from the received DMX stream (forwarding).
      * @param channel The channel to get. Must be between 1 and 512.
      * @return The value of the channel as a uint8_t.
      */
@@ -161,6 +168,8 @@ public:
     /**
      * Sets the number of channels for the DMX transmit buffer.
      * This must be called before begin().
+        * When set to N, only channels 1..N are transmitted/forwarded; higher channels are ignored.
+        * This does not affect receiving (RX always captures up to 512 channels).
      * @param channels The number of channels to use. Must be between 1 and 512.
      */
     void setTxChannels(uint16_t channels);
@@ -179,6 +188,7 @@ private:
     TaskHandle_t dmx_rx_task_handle = nullptr;
     int rx_pin = DMXPin::NoRx;
     int tx_pin = DMXPin::NoTx;
+    int uart_map_index = -1;
     uart_port_t dmx_uart_num = UART_NUM_MAX;
     uint8_t *dmx_data_tx = nullptr;
     uint16_t dmx_tx_channels = 512;
@@ -207,14 +217,19 @@ class DMXFixtureDescriptor {
 public:
     DMXFixtureDescriptor(uint16_t num_channels, ...);
 
+    DMXFixtureDescriptor(const DMXFixtureDescriptor&) = delete;
+    DMXFixtureDescriptor& operator=(const DMXFixtureDescriptor&) = delete;
+    DMXFixtureDescriptor(DMXFixtureDescriptor&&) = delete;
+    DMXFixtureDescriptor& operator=(DMXFixtureDescriptor&&) = delete;
+
     /**
      * Destructor for the DMXFixtureDescriptor.
      */
     ~DMXFixtureDescriptor();
 
 private:
-    DMXChannelType* channel_types;
-    uint16_t num_channels;
+    DMXChannelType* channel_types = nullptr;
+    uint16_t num_channels = 0;
 
     friend class DMXFixture;
     friend class DMXUniverse;
@@ -228,6 +243,16 @@ private:
 class DMXFixture {
 public:
     DMXFixture(DMXFixtureDescriptor* descriptor, uint16_t address);
+
+    DMXFixture(const DMXFixture&) = delete;
+    DMXFixture& operator=(const DMXFixture&) = delete;
+    DMXFixture(DMXFixture&&) = delete;
+    DMXFixture& operator=(DMXFixture&&) = delete;
+
+    ~DMXFixture() {
+        delete[] channels;
+        channels = nullptr;
+    }
 
     /**
      * Sets the value of all channels with the given type to the given value.
@@ -263,7 +288,7 @@ public:
      */
     inline uint8_t getChannel(uint16_t channel) {
         if (channel >= descriptor->num_channels) {
-            return -1;
+            return 0;
         }
         return channels[channel];
     }
@@ -289,8 +314,8 @@ public:
 
 private:
     DMXFixtureDescriptor* descriptor;
-    uint8_t* channels;
-    uint16_t address;
+    uint8_t* channels = nullptr;
+    uint16_t address = 1;
 
     friend class DMXUniverse;
 };

@@ -32,7 +32,7 @@ void setup() {
      * The transmitting MAX485's DI pin should be connected to the TX pin of the ESP32 (pin 17)
      *  and RE and DE should be connected to 3.3V.
      */
-    // dmx.setTxChannels(50); // Optional: Set the number of channels to transmit (default is 512)
+    // dmx.setTxChannels(50); // Optional: Only channels 1..50 will be transmitted (default is 512)
     dmx.begin(DMXMode::Both, DMXPin::Serial2Rx, DMXPin::Serial2Tx);
 }
 
